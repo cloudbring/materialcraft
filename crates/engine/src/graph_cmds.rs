@@ -135,6 +135,7 @@ fn duplicate(s: &mut Session, p: &J) -> Result<J> {
     let i = graph_index(s, p)?;
     s.edit("Duplicate graph", |s| {
         let mut g = s.pkg.graph(i)?.clone();
+        g.reidentify();
         g.name = s.pkg.unique_graph_name(&g.name);
         s.pkg.graphs.push(g);
         s.graph = s.pkg.graphs.len() - 1;
@@ -496,8 +497,10 @@ fn from_selection(s: &mut Session, p: &J) -> Result<J> {
         let mut sub = materialcraft_core::Graph::new(&name);
         sub.size = src.size;
         sub.next_id = src.next_id;
-        sub.nodes = src.nodes.iter().filter(|n| ids.contains(&n.id)).cloned().collect();
-        sub.connections = src.connections.iter().filter(|c| ids.contains(&c.from) && ids.contains(&c.to)).cloned().collect();
+        sub.replace_topology(
+            src.nodes.iter().filter(|n| ids.contains(&n.id)).cloned().collect(),
+            src.connections.iter().filter(|c| ids.contains(&c.from) && ids.contains(&c.to)).cloned().collect(),
+        );
         let incoming: Vec<_> = src.connections.iter().filter(|c| ids.contains(&c.to) && !ids.contains(&c.from)).cloned().collect();
         let outgoing: Vec<_> = src.connections.iter().filter(|c| ids.contains(&c.from) && !ids.contains(&c.to)).cloned().collect();
         let rect = nodes_rect(s, &ids).unwrap_or([0.0; 4]);

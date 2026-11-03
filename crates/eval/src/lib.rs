@@ -14,7 +14,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use materialcraft_core::{Graph, Node, NodeId, Package, SizeMode, Value};
+use materialcraft_core::{Graph, GraphTopology, Node, NodeId, Package, SizeMode, Value};
 use materialcraft_image::{Image, Kind};
 use materialcraft_nodes::{Ctx, NodeDef, PortKind, find, resolve_params};
 
@@ -105,6 +105,9 @@ impl Cooked {
 /// LRU cache of node outputs, bounded by bytes.
 pub struct Cache {
     entries: HashMap<u64, (Arc<Vec<Image>>, usize, u64)>,
+    topologies: HashMap<u64, (u64, Arc<GraphTopology>)>,
+    #[cfg(test)]
+    cook_counts: HashMap<NodeId, usize>,
     bytes: usize,
     cap: usize,
     tick: u64,
@@ -118,7 +121,15 @@ impl Default for Cache {
 
 impl Cache {
     pub fn new(cap_bytes: usize) -> Cache {
-        Cache { entries: HashMap::new(), bytes: 0, cap: cap_bytes, tick: 0 }
+        Cache {
+            entries: HashMap::new(),
+            topologies: HashMap::new(),
+            #[cfg(test)]
+            cook_counts: HashMap::new(),
+            bytes: 0,
+            cap: cap_bytes,
+            tick: 0,
+        }
     }
 
     pub fn bytes(&self) -> usize {
@@ -135,7 +146,16 @@ impl Cache {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.topologies.clear();
         self.bytes = 0;
+    }
+
+    fn topology(&mut self, graph: &Graph) -> Arc<GraphTopology> {
+        let entry = self.topologies.entry(graph.id()).or_insert_with(|| (graph.revision(), Arc::new(GraphTopology::build(graph))));
+        if entry.0 != graph.revision() {
+            *entry = (graph.revision(), Arc::new(GraphTopology::build(graph)));
+        }
+        Arc::clone(&entry.1)
     }
 
     fn get(&mut self, key: u64) -> Option<Arc<Vec<Image>>> {
@@ -268,11 +288,11 @@ pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &mut Cache) -> Cook
     } else {
         opts
     };
-    let order = graph.topo_order();
+    let topology = cache.topology(graph);
     let needed: Option<std::collections::BTreeSet<NodeId>> = opts.only.as_ref().map(|ids| {
         let mut s: std::collections::BTreeSet<NodeId> = ids.iter().copied().collect();
         for id in ids {
-            s.extend(graph.upstream(*id));
+            s.extend(topology.upstream(*id));
         }
         s
     });
@@ -281,7 +301,7 @@ pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &mut Cache) -> Cook
     for (k, v) in &opts.overrides {
         vars.insert(k.clone(), v.clone());
     }
-    for id in order {
+    for &id in &topology.order {
         if needed.as_ref().is_some_and(|s| !s.contains(&id)) {
             continue;
         }
@@ -289,24 +309,33 @@ pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &mut Cache) -> Cook
             out.cancelled = true;
             break;
         }
-        let Ok(node) = graph.node(id) else { continue };
-        let r = cook_node(pkg, graph, node, &out, &vars, opts, cache);
+        let Some(node) = topology.node(graph, id) else { continue };
+        let r = cook_node(pkg, graph, &topology, node, &out, &vars, opts, cache);
         out.nodes.insert(id, r);
     }
     out.ms = (now_ms() - t0) as f32;
     out
 }
 
-fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BTreeMap<String, Value>, opts: &Options, cache: &mut Cache) -> NodeResult {
+fn cook_node(
+    pkg: &Package,
+    graph: &Graph,
+    topology: &GraphTopology,
+    node: &Node,
+    done: &Cooked,
+    vars: &BTreeMap<String, Value>,
+    opts: &Options,
+    cache: &mut Cache,
+) -> NodeResult {
     let (in_ports, out_ports) = ports(pkg, node);
     let def = find(&node.def);
     // Gather inputs by port order, with their keys.
     let mut inputs: Vec<Option<Image>> = Vec::with_capacity(in_ports.len());
     let mut in_keys: Vec<u64> = Vec::with_capacity(in_ports.len());
     for p in &in_ports {
-        let src = graph.input_of(node.id, &p.id).and_then(|c| {
+        let src = topology.input_of(graph, node.id, &p.id).and_then(|c| {
             let r = done.nodes.get(&c.from)?;
-            let from = graph.node(c.from).ok()?;
+            let from = topology.node(graph, c.from)?;
             let idx = ports(pkg, from).1.iter().position(|o| o.id == c.from_port)?;
             Some((r.outputs.get(idx)?.clone(), r.key ^ hash_of(&idx)))
         });
@@ -373,6 +402,10 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
         && let Some(v) = cache.get(key)
     {
         return NodeResult { outputs: v, error: None, ms: 0.0, key, cached: true };
+    }
+    #[cfg(test)]
+    {
+        *cache.cook_counts.entry(node.id).or_default() += 1;
     }
     let t0 = now_ms();
     let result: Result<Vec<Image>, String> = if node.disabled {
@@ -469,6 +502,103 @@ pub fn now_ms() -> f64 {
 mod tests {
     use super::*;
     use materialcraft_core::Graph;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn cached_order_tracks_random_edits(edits in proptest::collection::vec((0u8..5, 0u8..12, 0u8..12), 1..100)) {
+            let mut graph = Graph::new("random");
+            let mut cache = Cache::default();
+            for (action, from, to) in edits {
+                let from = NodeId(u64::from(from) + 1);
+                let to = NodeId(u64::from(to) + 1);
+                match action {
+                    0 => { graph.add_node("uniform", [0.0, 0.0]); }
+                    1 => { graph.remove_nodes(&[from]); }
+                    2 => { let _ = graph.connect(from, "output", to, "input"); }
+                    3 => { graph.disconnect(to, "input"); }
+                    _ => {
+                        let mut ids: Vec<_> = graph.nodes.iter().map(|node| node.id).collect();
+                        ids.reverse();
+                        graph.reorder_nodes(&ids);
+                    }
+                }
+                let topology = cache.topology(&graph);
+                prop_assert_eq!(&topology.order, &graph.topo_order());
+                let again = cache.topology(&graph);
+                prop_assert!(Arc::ptr_eq(&topology, &again));
+            }
+        }
+    }
+
+    #[test]
+    fn exactly_one_cook_per_dirty_node() {
+        let mut graph = Graph::new("dirty");
+        graph.size = [4, 4];
+        let first = graph.add_node("uniform", [0.0, 0.0]);
+        graph.node_mut(first).unwrap().params.insert("color".into(), Value::Color([0.1, 0.2, 0.3, 1.0]));
+        let second = graph.add_node("uniform", [0.0, 0.0]);
+        let output = graph.add_node("output", [0.0, 0.0]);
+        graph.connect(first, "output", output, "input").unwrap();
+        let mut package = Package::new("dirty");
+        package.graphs.push(graph);
+        let mut cache = Cache::default();
+        let opts = Options::new(&no_res);
+        cook(&package, 0, &opts, &mut cache);
+        assert_eq!(cache.cook_counts, HashMap::from([(first, 1), (second, 1), (output, 1)]));
+        cook(&package, 0, &opts, &mut cache);
+        assert_eq!(cache.cook_counts, HashMap::from([(first, 1), (second, 1), (output, 1)]));
+        package.graphs[0].node_mut(first).unwrap().params.insert("color".into(), Value::Color([0.2, 0.4, 0.6, 1.0]));
+        cook(&package, 0, &opts, &mut cache);
+        assert_eq!(cache.cook_counts, HashMap::from([(first, 2), (second, 1), (output, 2)]));
+        package.graphs[0].disconnect(output, "input");
+        cook(&package, 0, &opts, &mut cache);
+        assert_eq!(cache.cook_counts, HashMap::from([(first, 2), (second, 1), (output, 3)]));
+    }
+
+    #[test]
+    fn cycles_still_leave_cyclic_nodes_out() {
+        let mut graph = Graph::new("cycle");
+        let root = graph.add_node("uniform", [0.0, 0.0]);
+        let first = graph.add_node("output", [0.0, 0.0]);
+        let second = graph.add_node("output", [0.0, 0.0]);
+        graph.replace_topology(
+            graph.nodes.clone(),
+            vec![
+                materialcraft_core::Connection { from: first, from_port: "output".into(), to: second, to_port: "input".into() },
+                materialcraft_core::Connection { from: second, from_port: "output".into(), to: first, to_port: "input".into() },
+            ],
+        );
+        let mut package = Package::new("cycle");
+        package.graphs.push(graph);
+        let cooked = cook(&package, 0, &Options::new(&no_res), &mut Cache::default());
+        assert_eq!(cooked.nodes.keys().copied().collect::<Vec<_>>(), vec![root]);
+    }
+
+    #[test]
+    #[ignore = "release-only topology benchmark"]
+    fn topology_500_nodes_1000_edits() {
+        let mut graph = Graph::new("benchmark");
+        graph.size = [4, 4];
+        let first = graph.add_node("uniform", [0.0, 0.0]);
+        let mut previous = first;
+        for _ in 1..500 {
+            let next = graph.add_node("uniform", [0.0, 0.0]);
+            graph.connect(previous, "output", next, "input").unwrap();
+            previous = next;
+        }
+        let mut package = Package::new("benchmark");
+        package.graphs.push(graph);
+        let mut cache = Cache::default();
+        let options = Options::new(&no_res);
+        let started = std::time::Instant::now();
+        for iteration in 0..1_000 {
+            package.graphs[0].node_mut(first).unwrap().params.insert("color".into(), Value::Color([iteration as f32 / 1000.0, 0.0, 0.0, 1.0]));
+            let cooked = cook(&package, 0, &options, &mut cache);
+            assert_eq!(cooked.nodes.len(), 500);
+        }
+        println!("topology_500_nodes_1000_edits: {:.2} ms", started.elapsed().as_secs_f64() * 1000.0);
+    }
 
     fn no_res(_: &str) -> Option<Image> {
         None

@@ -35,6 +35,11 @@ apps          materialcraft (desktop), materialcraft-cli, materialcraft-web
 A node's cook is a pure function `fn(&Ctx) -> Result<Vec<Image>, String>`: `Ctx` carries the output
 size, the seed, tiling, the inputs (by port order, `None` when unconnected), the resolved parameters,
 a resource decoder and the graph's exposed values. `eval::cook` walks the graph in dependency order.
+The evaluator caches indexed incoming edges, node positions and topological order by graph identity
+and topology revision. Structural graph methods advance that revision; direct edits to public `nodes`
+or `connections` must call `touch_topology`. Parameter and layout edits leave the index intact.
+Undo/redo refreshes the revision, and graph duplicates receive a new identity. Identity and revision
+are runtime-only, not stored in `.mcraft` packages.
 For each node it hashes the definition id, resolved parameters, size, seed, tiling, the keys of its
 input images, resource bytes and (for instances) the sub-graph: equal keys hit the cache, so an edit
 re-cooks only the nodes downstream of it, and undo finds earlier results again. A failing node shows

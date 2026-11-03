@@ -98,7 +98,7 @@ fn insert_clip(s: &mut Session, clip: &Clip, at: Option<[f32; 2]>, offset: [f32;
         let mut c = n.clone();
         c.id = id;
         c.pos = [n.pos[0] + shift[0], n.pos[1] + shift[1]];
-        g.nodes.push(c);
+        g.insert_node(c);
     }
     for c in &clip.connections {
         if let (Some(a), Some(b)) = (map.get(&c.from), map.get(&c.to)) {

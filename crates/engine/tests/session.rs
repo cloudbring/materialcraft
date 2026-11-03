@@ -6,6 +6,23 @@ fn run(s: &mut Session, id: &str, p: Value) -> Value {
 }
 
 #[test]
+fn topology_revision_survives_undo_redo_and_graph_duplication() {
+    let mut session = sample_session();
+    let graph_id = session.graph().unwrap().id();
+    let before = session.graph().unwrap().revision();
+    run(&mut session, "graph.node.add", json!({"def": "uniform"}));
+    let after_edit = session.graph().unwrap().revision();
+    assert!(after_edit > before);
+    run(&mut session, "edit.undo", json!({}));
+    let after_undo = session.graph().unwrap().revision();
+    assert!(after_undo > after_edit);
+    run(&mut session, "edit.redo", json!({}));
+    assert!(session.graph().unwrap().revision() > after_undo);
+    run(&mut session, "graph.duplicate", json!({}));
+    assert_ne!(session.graph().unwrap().id(), graph_id);
+}
+
+#[test]
 fn every_template_cooks_cleanly() {
     let mut s = sample_session();
     s.preview_size = Some(128);

@@ -231,6 +231,9 @@ impl Session {
 
     fn restore(&mut self, s: Snapshot) {
         self.pkg = s.pkg;
+        for graph in &mut self.pkg.graphs {
+            graph.touch_topology();
+        }
         self.graph = s.graph.min(self.pkg.graphs.len().saturating_sub(1));
         self.selection = s.selection;
     }

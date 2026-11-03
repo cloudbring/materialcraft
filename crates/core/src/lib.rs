@@ -14,8 +14,8 @@ pub mod package;
 pub mod value;
 
 pub use graph::{
-    Attributes, BaseParams, Comment, Connection, ExposedParam, Frame, Graph, GraphKind, MAX_SIZE_LOG2, MIN_SIZE_LOG2, Node, NodeId, OutputFormat, Pin, Preset,
-    SizeMode,
+    Attributes, BaseParams, Comment, Connection, ExposedParam, Frame, Graph, GraphKind, GraphTopology, MAX_SIZE_LOG2, MIN_SIZE_LOG2, Node, NodeId,
+    OutputFormat, Pin, Preset, SizeMode,
 };
 pub use package::{PACKAGE_EXT, Package, Resource};
 pub use value::{Curve, CurvePoint, Gradient, GradientKey, Value, linear_to_srgb, parse_color, srgb_to_linear};

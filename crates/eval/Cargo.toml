@@ -13,3 +13,6 @@ materialcraft-core = { workspace = true }
 materialcraft-image = { workspace = true }
 materialcraft-nodes = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+proptest = "1"
