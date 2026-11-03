@@ -46,6 +46,7 @@ The ranked work list is [docs/gaps.md](docs/gaps.md); file formats are in
 
 | Date | What landed |
 |---|---|
+| 2026-11-03 | `xtask` delegates `version`, `ico`, `icns` and `layers` checking to shared `craft-xtask`; `wasm`, `ci` and the `layers` table report stay local with golden regression coverage |
 | 2026-11-02 | Cross-app materials: `.mcmat` portable materials, Send to TextureCraft, input-node preview images (mesh maps from TextureCraft), live re-cooks from TextureCraft through the CLI |
 | 2026-11-02 | Visual function editor, dynamic parameters, presets and groups, 105 more nodes (flood fill, FX-Map, SVG, Text, 3D noises, weathering, material blending), mesh import, browser file I/O, 2D histogram, CLI `--set`, better samples |
 | 2026-11-02 | First day: engine, ~120 nodes, cooking cache, packages, export, the full editor UI, 3D preview, CLI, control channel with synthetic input, MCP server, wasm builds |

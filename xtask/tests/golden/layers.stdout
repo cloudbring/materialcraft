@@ -1,0 +1,20 @@
+Dependency layering (xtask/src/layers.rs)
+
+
+crate                        layer    workspace deps
+materialcraft                exempt   materialcraft-engine, materialcraft-ui-egui
+materialcraft-automation     L4       materialcraft-engine, materialcraft-formats, materialcraft-render
+materialcraft-cli            exempt   materialcraft-automation, materialcraft-engine
+materialcraft-core           L0       
+materialcraft-engine         L3       materialcraft-core, materialcraft-eval, materialcraft-formats, materialcraft-geom, materialcraft-image, materialcraft-nodes
+materialcraft-eval           L2       materialcraft-core, materialcraft-image, materialcraft-nodes
+materialcraft-formats        L2       materialcraft-core, materialcraft-geom, materialcraft-image
+materialcraft-geom           L0       
+materialcraft-image          L0       
+materialcraft-nodes          L1       materialcraft-core, materialcraft-image
+materialcraft-render         L3       materialcraft-geom, materialcraft-image
+materialcraft-ui-egui        L5       materialcraft-engine, materialcraft-render
+materialcraft-web            exempt   materialcraft-engine, materialcraft-ui-egui
+xtask                        exempt   
+
+OK: 14 crates, no layering violations.

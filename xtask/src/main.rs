@@ -1,10 +1,9 @@
 //! Workspace tooling: `cargo xtask <command>`.
 //!
-//! Pure Rust (std + serde_json). `cargo` itself is invoked through `std::process::Command`.
+//! Shared tasks delegate to `craft-xtask`; MaterialCraft-specific commands (`wasm`, `ci`) and
+//! the `layers` report formatting stay local. `cargo` is invoked through `std::process::Command`.
 
-mod ico;
-mod layers;
-mod version;
+mod task_policy;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -26,19 +25,20 @@ commands:
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+    let shared_args: Vec<String> = args.iter().skip(1).cloned().collect();
+    let configs = task_policy::configs(root());
     let result = match args.first().map(String::as_str) {
-        Some("layers") => cmd_layers(),
+        Some("layers") => cmd_layers(&configs.layers, &shared_args),
         Some("wasm") => cmd_wasm(),
         Some("ci") => cmd_ci(),
-        Some("version") => version::run(&root(), &rest),
-        Some("ico") => ico::run_ico(&rest),
-        Some("icns") => ico::run_icns(&rest),
+        Some("version") => craft_xtask::version::run(&configs.version, &shared_args),
+        Some("ico") => craft_xtask::ico::run(&configs.ico, &shared_args),
+        Some("icns") => craft_xtask::ico::run_icns(&configs.ico, &shared_args),
         Some("-h" | "--help" | "help") | None => {
-            print!("{USAGE}");
+            print!("{}", usage());
             Ok(())
         }
-        Some(other) => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+        Some(other) => Err(format!("unknown command `{other}`\n\n{}", usage())),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -47,6 +47,10 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn usage() -> String {
+    format!("{USAGE}\nShared task syntax:\n  {}\n  {}\n  {}\n", craft_xtask::version::cli_help(), craft_xtask::ico::cli_help(), craft_xtask::layers::cli_help(),)
 }
 
 /// Workspace root (parent of the xtask crate).
@@ -76,11 +80,11 @@ fn metadata() -> Result<serde_json::Value, String> {
     serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: bad JSON: {e}"))
 }
 
-fn cmd_layers() -> Result<(), String> {
-    let crates = layers::from_metadata(&metadata()?)?;
+fn cmd_layers(config: &craft_xtask::layers::Config, args: &[String]) -> Result<(), String> {
+    let report = craft_xtask::layers::compute(config, &craft_xtask::layers::Args::parse(args)?)?;
     println!("Dependency layering (xtask/src/layers.rs)\n");
-    for (dir, _) in layers::TABLE {
-        let present = crates.iter().any(|c| c.name == layers::package(dir));
+    for (dir, _) in task_policy::TABLE {
+        let present = report.crates.iter().any(|c| c.name == task_policy::package(dir));
         if !present {
             if root().join("crates").join(dir).join("Cargo.toml").is_file() {
                 println!("note: crates/{dir} has a Cargo.toml but is not a workspace member; not checked");
@@ -90,21 +94,20 @@ fn cmd_layers() -> Result<(), String> {
         }
     }
     println!("\n{:<28} {:<8} workspace deps", "crate", "layer");
-    for c in &crates {
+    for c in &report.crates {
         let ws: Vec<&str> = c.deps.iter().filter(|d| d.workspace).map(|d| d.name.as_str()).collect();
-        println!("{:<28} {:<8} {}", c.name, layers::describe(&c.name), ws.join(", "));
+        println!("{:<28} {:<8} {}", c.name, task_policy::describe(config, &c.name), ws.join(", "));
     }
-    let violations = layers::check(&crates);
     println!();
-    if violations.is_empty() {
-        println!("OK: {} crates, no layering violations.", crates.len());
+    if report.ok {
+        println!("OK: {} crates, no layering violations.", report.crates.len());
         Ok(())
     } else {
-        println!("{} violation(s):", violations.len());
-        for v in &violations {
+        println!("{} violation(s):", report.violations.len());
+        for v in &report.violations {
             println!("  - {v}");
         }
-        Err(format!("{} layering violation(s)", violations.len()))
+        Err(format!("{} layering violation(s)", report.violations.len()))
     }
 }
 
@@ -123,7 +126,7 @@ const WASM_PACKAGES: &[&str] = &[
 ];
 
 fn cmd_wasm() -> Result<(), String> {
-    let members = layers::from_metadata(&metadata()?)?;
+    let members = craft_xtask::layers::from_metadata(&metadata()?)?;
     let mut results = Vec::new();
     for pkg in WASM_PACKAGES {
         if !members.iter().any(|c| c.name == *pkg) {
@@ -157,7 +160,7 @@ fn cmd_ci() -> Result<(), String> {
         ("fmt", Box::new(cargo_step(&["fmt", "--all", "--", "--check"]))),
         ("clippy", Box::new(cargo_step(&["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]))),
         ("test", Box::new(cargo_step(&["test", "--workspace"]))),
-        ("layers", Box::new(cmd_layers)),
+        ("layers", Box::new(|| cmd_layers(&task_policy::configs(root()).layers, &[]))),
         ("wasm", Box::new(cmd_wasm)),
     ];
     for (i, (name, step)) in steps.iter().enumerate() {
