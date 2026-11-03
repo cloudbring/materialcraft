@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use craft_blur::{Cancel, Edge, Gaussian, Quality, Scratch, Separable, Shape};
+use craft_blur::{Cancel, Edge, Gaussian, Quality, Scratch, Shape};
 use materialcraft_image::{Image, Kind};
 use rayon::prelude::*;
 
@@ -44,43 +44,12 @@ fn gaussian_rows(pixels: &mut [f32], width: usize, channels: usize, sigma: f32, 
         return Ok(());
     }
     let gaussian = Gaussian::new(sigma, Quality::Recursive)?;
-    let padding = if tile {
-        match gaussian.separable() {
-            Separable::Kernel(kernel) => kernel.len() / 2,
-            _ => (24.0 * sigma).ceil() as usize,
-        }
-    } else {
-        0
-    };
-    let padded_width = width + padding * 2;
+    let edge = if tile { Edge::Wrap } else { Edge::Clamp };
     let row_samples = width * channels;
-    pixels.par_chunks_mut(row_samples * craft_blur::LINE_BATCH).try_for_each_init(
-        || (Scratch::default(), Vec::<f32>::new()),
-        |(scratch, padded), rows| {
-            let height = rows.len() / row_samples;
-            if padding == 0 {
-                return gaussian.filter_rows(rows, Shape::new(width, height, channels)?, Edge::Clamp, scratch, Cancel::Never);
-            }
-            let shape = Shape::new(padded_width, height, channels)?;
-            padded.clear();
-            padded.try_reserve(shape.samples()).map_err(|_| craft_blur::Error::Allocation)?;
-            for row in rows.chunks_exact(row_samples) {
-                let mut remaining = padded_width * channels;
-                let mut source = (width - padding % width) % width * channels;
-                while remaining != 0 {
-                    let count = remaining.min(row_samples - source);
-                    padded.extend_from_slice(&row[source..source + count]);
-                    remaining -= count;
-                    source = 0;
-                }
-            }
-            gaussian.filter_rows(padded, shape, Edge::Clamp, scratch, Cancel::Never)?;
-            for (output, input) in rows.chunks_exact_mut(row_samples).zip(padded.chunks_exact(padded_width * channels)) {
-                output.copy_from_slice(&input[padding * channels..padding * channels + row_samples]);
-            }
-            Ok(())
-        },
-    )
+    pixels.par_chunks_mut(row_samples * craft_blur::LINE_BATCH).try_for_each_init(Scratch::default, |scratch, rows| {
+        let height = rows.len() / row_samples;
+        gaussian.filter_rows(rows, Shape::new(width, height, channels)?, edge, scratch, Cancel::Never)
+    })
 }
 
 fn transpose(pixels: &[f32], width: usize, height: usize, channels: usize) -> Vec<f32> {

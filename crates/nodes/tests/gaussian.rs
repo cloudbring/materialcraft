@@ -59,6 +59,31 @@ fn clamp_matches_shared_two_dimensional_filter() {
 }
 
 #[test]
+fn tiled_matches_shared_periodic_filter_bit_for_bit() {
+    for kind in [Kind::Gray, Kind::Color] {
+        let image = Image::generate(32, 32, kind, |column, row| {
+            let value = ((column * 17 + row * 31) % 257) as f32 / 256.0;
+            [value, column as f32 / 31.0, row as f32 / 31.0, 0.25 + value * 0.75]
+        });
+        for sigma in [0.051, 0.1, 0.5, 7.999].into_iter().chain((1..=128).map(|sigma| sigma as f32)) {
+            let mut reference = image.data.as_ref().clone();
+            Gaussian::new(sigma.min(image.w.max(image.h) as f32), Quality::Recursive)
+                .expect("valid sigma")
+                .apply(
+                    &mut reference,
+                    Shape::new(image.w as usize, image.h as usize, image.channels()).expect("valid shape"),
+                    Edge::Wrap,
+                    &mut Scratch::default(),
+                    Cancel::Never,
+                )
+                .expect("shared filter succeeds");
+            let output = ops::gaussian(&image, sigma, true);
+            assert!(reference.iter().zip(output.data.iter()).all(|(expected, actual)| expected.to_bits() == actual.to_bits()), "{kind:?} sigma={sigma}");
+        }
+    }
+}
+
+#[test]
 fn gaussian_impulse_variance_is_calibrated_on_both_axes() {
     for sigma in [1.0, 4.0, 16.0] {
         for tile in [false, true] {

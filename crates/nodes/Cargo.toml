@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 # TODO(#2): repoint to the shared release revision when the craft-blur branch lands.
-craft-blur = { git = "https://github.com/cloudbring/craft-libs", branch = "algo/2-craft-blur-midband" }
+craft-blur = { git = "https://github.com/cloudbring/craft-libs", branch = "algo/integration" }
 materialcraft-core = { workspace = true }
 materialcraft-image = { workspace = true }
 rayon = { workspace = true }

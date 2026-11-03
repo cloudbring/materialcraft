@@ -2,8 +2,9 @@
 
 MaterialCraft uses `craft-blur::Gaussian` with `Quality::Recursive` for Gaussian filtering.
 The shared crate selects a variance-calibrated sampled kernel below sigma 8 and a recursive
-filter for larger sigmas. `Cargo.lock` pins the requested `algo/2-craft-blur-midband` branch
-to `d98d0605bb63a0862330f3885605ec1def323643`; the dependency has a repoint TODO for release.
+filter for larger sigmas. `Cargo.lock` pins `algo/integration` to
+`91e0328f63f027086214472d48cfb4909d95a2a6`, which includes `Edge::Wrap` from `fc163dc`;
+the dependency retains its repoint TODO for release.
 
 ## Scope and compatibility
 
@@ -24,13 +25,12 @@ compatibility switch is introduced.
 
 ## Periodic edges
 
-This craft-blur revision has `Clamp`, `Mirror`, `Zero` and `Transparent`, but **no `Wrap`**.
-MaterialCraft implements wrapping with periodic padding **per line**, not a padded 2D image:
-the sampled filter gets its complete kernel radius on both sides, and the recursive filter
-gets `ceil(24 * sigma)` pixels on each side, repeating small tiles as often as necessary.
-Filtering uses `Edge::Clamp` outside this halo and crops back to the original period. Clamp
-mode uses no halo. Scratch storage is reused per Rayon worker in batches of eight lines;
-blocked transposes allow the same path to filter the other axis without unsafe code.
+Tiled filtering passes `Edge::Wrap` directly to craft-blur; untiled filtering still uses
+`Edge::Clamp`. MaterialCraft no longer constructs, filters or crops periodic halos, and no
+longer owns a padded-row buffer. Scratch storage is reused per Rayon worker in batches of
+eight lines; blocked transposes allow the same path to filter the other axis without unsafe
+code. Independent channel filtering, sigma validation, the image-size sigma cap and no-op
+handling are unchanged.
 
 Regression tests cover matching first/last columns and rows within `1e-6` for input symmetric
 about each wrap boundary, plus circular-shift equivariance and agreement with a 3x3 repeated
@@ -120,3 +120,44 @@ MC_BLUR_FIXTURES="$PWD/plan/blur-fixtures" cargo test -p materialcraft-nodes --r
   sysroot, even when launched through `rustup run stable cargo`.
 - Removed 102 legacy production lines, replaced by 79 adapter lines (net -23). No median,
   unrelated-warning, package-format or evaluation-cache changes.
+
+## Edge::Wrap follow-up (#2)
+
+November 3, 2026: a temporary test module retained the previous padded implementation until
+its outputs were compared by `f32::to_bits()` with the Wrap adapter. All 1,056 combinations
+passed: the existing deterministic 32x32 gray/RGBA node inputs, requested sigmas 1 through
+128 plus 0.051, 0.1, 0.5 and 7.999, and isotropic, half-strength y, x-only and y-only passes.
+The existing image-size cap still applies, so effective sigma on these fixtures is at most
+32. Separately, byte-for-byte comparisons of all 972 catalog outputs (both edge modes)
+found zero changed outputs. The temporary padded implementation was then deleted. A retained
+regression test compares fixture outputs bit-for-bit against the shared periodic filter;
+the existing symmetric-seam test is unchanged.
+
+This is fixture-scoped identity, not a universal bitwise promise. Additional asymmetric
+stress fixtures exposed one-ULP differences from the former finite halo: gray 257x129 with
+sigma x/y 0/19 at sample 4201, and color 31x23 with requested sigma x/y 52/26 (effective
+31/26) at sample 557, using channels `[v, 2v - 0.5, 1 - v, 0.25 + 0.75v]`, where
+`v = ((17x + 31y) % 257) / 256`. Neither case changes the required node fixtures or seam test.
+
+The initial separate before/after benchmark encountered substantial host-load variation.
+For the comparison below, the temporary test timed both adapters in the same release process,
+alternating execution order, with four Rayon workers, one warm-up per adapter and the median
+of five invocations. Input and allocation/transpose costs match `gaussian_measurements`.
+
+| Sigma | Padded before ms | Wrap after ms |
+| --- | ---: | ---: |
+| 2 | 18.330 | 18.102 |
+| 16 | 20.602 | 20.705 |
+| 64 | 24.794 | 23.699 |
+
+These are whole-node 2048x2048 grayscale timings, not the shared crate's direct-filter
+benchmark; no general 2.67x speedup is claimed. The production adapter removes 37 lines and
+adds six (net -31), retaining no app-owned padding code.
+
+Follow-up validation: `cargo test -p materialcraft-nodes` and the same command with
+`--release` each pass 35 tests, with zero failures and three opt-in tests ignored. Workspace
+clippy passes with `-D warnings -A clippy::chunks_exact_to_as_chunks -A deprecated`, allowing
+only the previously known warning classes. Formatting and whitespace checks pass, layering
+passes for all 14 crates, and all ten `cargo xtask wasm` packages pass (existing engine wasm
+warnings remain). All Cargo commands use the rustup toolchain and the dedicated `target-2`
+directory, which is deleted after validation.
