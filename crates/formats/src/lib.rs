@@ -213,16 +213,93 @@ pub fn output_name(pattern: &str, graph: &str, identifier: &str, usage: &str) ->
     safe_file_name(&s)
 }
 
-/// Write `bytes` to `path` through a temporary file and a rename, so a failed write never leaves
-/// a truncated file behind.
+/// Write `bytes` atomically using a durable staging file.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("out")));
-    std::fs::write(&tmp, bytes).map_err(|e| FormatError::Io(format!("{}: {e}", tmp.display())))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        FormatError::Io(format!("{}: {e}", path.display()))
-    })
+    craft_atomic::atomic_write(path, bytes).map_err(|e| FormatError::Io(format!("{}: {e}", path.display())))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod atomic_tests {
+    use std::fs::{File, Permissions};
+    use std::io;
+    use std::path::Path;
+    use std::sync::{Arc, Barrier};
+
+    use craft_atomic::{AtomicFs, NewFilePermissions, RealFs, RenameRetry};
+
+    struct FailSync;
+
+    impl AtomicFs for FailSync {
+        fn create_new(&self, path: &Path, permissions: NewFilePermissions) -> io::Result<File> {
+            RealFs.create_new(path, permissions)
+        }
+        fn sync(&self, _file: &File) -> io::Result<()> {
+            Err(io::Error::other("injected sync failure"))
+        }
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            RealFs.rename(from, to)
+        }
+        fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+            RealFs.hard_link(from, to)
+        }
+        fn remove(&self, path: &Path) -> io::Result<()> {
+            RealFs.remove(path)
+        }
+        fn sync_dir(&self, dir: &Path) -> io::Result<()> {
+            RealFs.sync_dir(dir)
+        }
+        fn set_permissions(&self, file: &File, permissions: Permissions) -> io::Result<()> {
+            RealFs.set_permissions(file, permissions)
+        }
+    }
+
+    fn directory(name: &str) -> io::Result<std::path::PathBuf> {
+        let dir = std::env::temp_dir().join(format!("materialcraft-atomic-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    #[test]
+    fn sync_failure_preserves_old_file() {
+        let dir = directory("failure").unwrap();
+        let path = dir.join("save");
+        let old = vec![1; 256 * 1024];
+        let new = vec![2; 256 * 1024];
+        super::write_atomic(&path, &old).unwrap();
+        assert!(craft_atomic::atomic_write_custom(&FailSync, RenameRetry::platform(), &path, &new).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+        super::write_atomic(&path, &new).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), new);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_saves_are_complete() {
+        let dir = directory("concurrent").unwrap();
+        let path = dir.join("save");
+        let barrier = Arc::new(Barrier::new(2));
+        let writers: Vec<_> = [1, 2]
+            .into_iter()
+            .map(|byte| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let data = vec![byte; 256 * 1024];
+                    barrier.wait();
+                    for _ in 0..10 {
+                        super::write_atomic(&path, &data).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let result = std::fs::read(&path).unwrap();
+        assert!(result == vec![1; 256 * 1024] || result == vec![2; 256 * 1024]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[cfg(test)]

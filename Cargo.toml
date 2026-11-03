@@ -82,6 +82,7 @@ getrandom = "0.3"
 # MIT OR Apache-2.0, pinned to one rev (the one TextureCraft pins).
 egui_kittest = "0.37"
 craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "f8f8829cc7be65d466d687dae381d1ca60e31242", features = ["serde"] }
+craft-atomic = { git = "https://github.com/storytold/craft-libs", rev = "f8f8829cc7be65d466d687dae381d1ca60e31242" }
 
 # egui 0.37 and winit: the suite's forks (storytold/egui, storytold/winit), as craft-libs pins them.
 [patch.crates-io]

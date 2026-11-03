@@ -52,19 +52,20 @@ impl AuthorizedWorkspace {
         let rel = relative_path(path)?;
         let root = self.write.as_ref().ok_or_else(|| denied("write"))?;
         let leaf = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let tmp = rel.with_file_name(format!(".{leaf}.{}.tmp", std::process::id()));
+        let tmp = rel.with_file_name(craft_atomic::temp_name(&leaf));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
-        let res = root
-            .open_with(&tmp, &options)
-            .and_then(|mut f| {
-                f.write_all(bytes)?;
-                f.sync_all()
-            })
-            .and_then(|()| root.rename(&tmp, root, &rel));
+        let mut file = root.open_with(&tmp, &options).map_err(|e| file_error("write", path, e))?.into_std();
+        let res = file.write_all(bytes).and_then(|()| craft_atomic::sync_file(&file));
+        drop(file);
+        let res = res.and_then(|()| root.rename(&tmp, root, &rel));
         if let Err(e) = res {
             let _ = root.remove_file(&tmp);
             return Err(file_error("write", path, e));
+        }
+        #[cfg(unix)]
+        if let Ok(parent) = root.open_dir(rel.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."))) {
+            let _ = craft_atomic::sync_file(&parent.into_std_file());
         }
         Ok(())
     }
