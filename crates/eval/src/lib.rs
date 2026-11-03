@@ -191,12 +191,14 @@ pub fn error_image(w: u32, h: u32) -> Image {
     Image::filled(w, h, Kind::Color, [1.0, 0.0, 1.0, 1.0])
 }
 
-/// A fingerprint of an input image: its size and 4096 evenly strided values. (Its address is no
-/// key: a freed image's memory comes back for the next one.)
-// shortcut: a sample, not every value; hash the whole image if inputs that differ only between samples ever collide.
+/// A fingerprint of the complete image, including its format and dimensions.
 fn image_key(i: &Image) -> u64 {
-    let step = (i.data.len() / 4096).max(1);
-    hash_of(&(i.w, i.h, i.data.iter().step_by(step).map(|v| v.to_bits()).collect::<Vec<u32>>()))
+    let mut hasher = DefaultHasher::new();
+    (i.w, i.h, i.kind, i.data.len()).hash(&mut hasher);
+    for value in i.data.iter() {
+        value.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn hash_of(v: &impl Hash) -> u64 {
@@ -349,10 +351,12 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
     let tile = node.base.tiling[0] && node.base.tiling[1];
     // Input nodes read the caller's image for their identifier.
     let input_img = node.def.starts_with("input_").then(|| opts.inputs.get(&identifier(node))).flatten();
-    let res_hash = match params.get("resource") {
-        Some(Value::Text(name)) => pkg.resource(name).map_or(0, |r| hash_of(&(r.bytes.len(), r.bytes.get(..64.min(r.bytes.len())).map(|b| b.to_vec())))),
-        _ => 0,
+    let resource_name = match params.get("resource") {
+        Some(Value::Text(name)) => Some(name.as_str()),
+        _ => None,
     };
+    let resource_image = resource_name.and_then(opts.resource);
+    let res_hash = resource_name.map(|name| (pkg.resource(name).map(|r| hash_of(&r.bytes)), resource_image.as_ref().map(image_key)));
     let sub_hash =
         if node.def == "graph_instance" { instance_graph(pkg, node).map_or(0, |(_, g)| hash_of(&serde_json::to_string(g).unwrap_or_default())) } else { 0 };
     let key = hash_of(&(
@@ -365,7 +369,9 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
         input_img.map(image_key),
         serde_json::to_string(vars).unwrap_or_default(),
     ));
-    if let Some(v) = cache.get(key) {
+    if node.def != "graph_instance"
+        && let Some(v) = cache.get(key)
+    {
         return NodeResult { outputs: v, error: None, ms: 0.0, key, cached: true };
     }
     let t0 = now_ms();
@@ -377,13 +383,17 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
     } else if node.def == "graph_instance" {
         cook_instance(pkg, node, &in_ports, &out_ports, &inputs, &params, (w, h), opts, cache)
     } else if let Some(d) = def {
-        let ctx = Ctx { w, h, seed, tile, inputs: &inputs, params: &params, resource: opts.resource, vars };
+        let resource = |name: &str| {
+            if Some(name) == resource_name { resource_image.clone() } else { (opts.resource)(name) }
+        };
+        let ctx = Ctx { w, h, seed, tile, inputs: &inputs, params: &params, resource: &resource, vars };
         (d.cook)(&ctx)
     } else {
         Err(format!("unknown node `{}`", node.def))
     };
     match result {
         Ok(imgs) if imgs.len() == out_ports.len().max(1) || out_ports.is_empty() => {
+            let key = if node.def == "graph_instance" { hash_of(&(key, imgs.iter().map(image_key).collect::<Vec<_>>())) } else { key };
             let v = Arc::new(imgs);
             cache.put(key, v.clone());
             NodeResult { outputs: v, error: None, ms: (now_ms() - t0) as f32, key, cached: false }
@@ -462,6 +472,71 @@ mod tests {
 
     fn no_res(_: &str) -> Option<Image> {
         None
+    }
+
+    #[test]
+    fn input_image_changes_outside_sample_invalidate_cache() {
+        let mut graph = Graph::new("g");
+        graph.size = [7, 7];
+        let input = graph.add_node("input_grayscale", [0.0, 0.0]);
+        let output = graph.add_node("output", [1.0, 0.0]);
+        graph.connect(input, "output", output, "input").unwrap();
+        let mut package = Package::new("p");
+        package.graphs.push(graph);
+        let mut options = Options::new(&no_res);
+        let image = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
+        options.inputs.insert("input".into(), image.clone());
+        let mut cache = Cache::default();
+        let first = cook(&package, 0, &options, &mut cache);
+        let mut changed = image;
+        Arc::make_mut(&mut changed.data)[1] = 1.0;
+        options.inputs.insert("input".into(), changed);
+        let second = cook(&package, 0, &options, &mut cache);
+        assert_ne!(first.image(output, 0).unwrap().data[1], second.image(output, 0).unwrap().data[1]);
+    }
+
+    #[test]
+    fn resource_changes_after_prefix_invalidate_cache() {
+        let mut graph = Graph::new("g");
+        graph.size = [4, 4];
+        let bitmap = graph.add_node("bitmap", [0.0, 0.0]);
+        graph.node_mut(bitmap).unwrap().params.insert("resource".into(), Value::Text("image".into()));
+        let mut package = Package::new("p");
+        package.graphs.push(graph);
+        package.resources.push(materialcraft_core::Resource { name: "image".into(), file: "image".into(), bytes: Arc::new(vec![0; 128]) });
+        let first_resource = |_: &str| Some(Image::filled(16, 16, Kind::Gray, [0.0; 4]));
+        let second_resource = |_: &str| Some(Image::filled(16, 16, Kind::Gray, [1.0; 4]));
+        let mut cache = Cache::default();
+        let first = cook(&package, 0, &Options::new(&first_resource), &mut cache);
+        Arc::make_mut(&mut package.resources[0].bytes)[100] = 1;
+        let second = cook(&package, 0, &Options::new(&second_resource), &mut cache);
+        assert_ne!(first.image(bitmap, 0).unwrap().data[0], second.image(bitmap, 0).unwrap().data[0]);
+    }
+
+    #[test]
+    fn instance_propagates_resource_changes_to_downstream_nodes() {
+        let mut sub = Graph::new("sub");
+        sub.size = [4, 4];
+        let bitmap = sub.add_node("bitmap", [0.0, 0.0]);
+        sub.node_mut(bitmap).unwrap().params.insert("resource".into(), Value::Text("image".into()));
+        let sub_output = sub.add_node("output", [1.0, 0.0]);
+        sub.connect(bitmap, "output", sub_output, "input").unwrap();
+        let mut graph = Graph::new("main");
+        graph.size = [4, 4];
+        let instance = graph.add_node("graph_instance", [0.0, 0.0]);
+        graph.node_mut(instance).unwrap().params.insert("graph".into(), Value::Text("sub".into()));
+        let output = graph.add_node("output", [1.0, 0.0]);
+        graph.connect(instance, "output", output, "input").unwrap();
+        let mut package = Package::new("p");
+        package.graphs.extend([graph, sub]);
+        package.resources.push(materialcraft_core::Resource { name: "image".into(), file: "image".into(), bytes: Arc::new(vec![0; 128]) });
+        let first_resource = |_: &str| Some(Image::filled(16, 16, Kind::Gray, [0.0; 4]));
+        let second_resource = |_: &str| Some(Image::filled(16, 16, Kind::Gray, [1.0; 4]));
+        let mut cache = Cache::default();
+        let first = cook(&package, 0, &Options::new(&first_resource), &mut cache);
+        Arc::make_mut(&mut package.resources[0].bytes)[100] = 1;
+        let second = cook(&package, 0, &Options::new(&second_resource), &mut cache);
+        assert_ne!(first.image(output, 0).unwrap().data[0], second.image(output, 0).unwrap().data[0]);
     }
 
     fn sample() -> (Package, NodeId, NodeId, NodeId) {
