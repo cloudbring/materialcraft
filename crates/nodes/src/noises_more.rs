@@ -6,7 +6,7 @@ use std::f32::consts::{PI, TAU};
 
 use crate::catalog::{CookResult, Ctx, NodeDef, node};
 use crate::generators::NOISES;
-use crate::noise::{cellular, fbm, hash3, rand1, rand2, value};
+use crate::noise::{cellular, fbm, gradient2, hash3, rand1, rand2, value};
 
 #[inline]
 pub(crate) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
@@ -26,8 +26,8 @@ pub(crate) fn perlin_xy(x: f32, y: f32, px: i32, py: i32, seed: u32) -> f32 {
     let (fx, fy) = (x - x0, y - y0);
     let (ix, iy) = (x0 as i32, y0 as i32);
     let g = |i: i32, j: i32, dx: f32, dy: f32| {
-        let a = (hash3(wrap(i, px), wrap(j, py), seed) >> 8) as f32 * (TAU / (1u32 << 24) as f32);
-        a.cos() * dx + a.sin() * dy
+        let gradient = gradient2(hash3(wrap(i, px), wrap(j, py), seed));
+        gradient[0] * dx + gradient[1] * dy
     };
     let fade = |t: f32| t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
     let (u, v) = (fade(fx), fade(fy));
