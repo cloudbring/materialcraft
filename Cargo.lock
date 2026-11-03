@@ -816,6 +816,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-blur"
+version = "0.1.0"
+source = "git+https://github.com/cloudbring/craft-libs?branch=algo%2F2-craft-blur-midband#d98d0605bb63a0862330f3885605ec1def323643"
+
+[[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=f8f8829cc7be65d466d687dae381d1ca60e31242#f8f8829cc7be65d466d687dae381d1ca60e31242"
@@ -2501,6 +2506,7 @@ dependencies = [
 name = "materialcraft-nodes"
 version = "0.1.0"
 dependencies = [
+ "craft-blur",
  "materialcraft-core",
  "materialcraft-image",
  "rayon",

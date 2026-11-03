@@ -3,92 +3,99 @@
 
 use std::sync::Arc;
 
+use craft_blur::{Cancel, Edge, Gaussian, Quality, Scratch, Separable, Shape};
 use materialcraft_image::{Image, Kind};
 use rayon::prelude::*;
 
-/// Gaussian blur with standard deviation `sigma` (pixels). Small sigmas use a sampled kernel;
-/// larger ones three box passes (a close Gaussian approximation in O(1) per pixel).
+/// Variance-calibrated Gaussian blur with standard deviation `sigma` (pixels).
 pub fn gaussian(img: &Image, sigma: f32, tile: bool) -> Image {
-    if sigma.is_nan() || sigma <= 0.05 || !sigma.is_finite() {
+    gaussian_xy(img, sigma, sigma, tile)
+}
+
+/// Independent Gaussian standard deviations along x/y, with periodic extension when tiled.
+pub fn gaussian_xy(img: &Image, sigma_x: f32, sigma_y: f32, tile: bool) -> Image {
+    let limit = img.w.max(img.h) as f32;
+    let sigma_x = if sigma_x.is_finite() && sigma_x > 0.05 { sigma_x.min(limit) } else { 0.0 };
+    let sigma_y = if sigma_y.is_finite() && sigma_y > 0.05 { sigma_y.min(limit) } else { 0.0 };
+    if sigma_x == 0.0 && sigma_y == 0.0 {
         return img.clone();
     }
-    let sigma = sigma.min(img.w.max(img.h) as f32);
-    if sigma < 3.0 {
-        let r = (sigma * 3.0).ceil() as i64;
-        let k: Vec<f32> = (-r..=r).map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp()).collect();
-        let s: f32 = k.iter().sum();
-        let k: Vec<f32> = k.iter().map(|v| v / s).collect();
-        let pass = |src: &Image, horizontal: bool| convolve_1d(src, &k, r, horizontal, tile);
-        return pass(&pass(img, true), false);
+    let (width, height, channels) = (img.w as usize, img.h as usize, img.channels());
+    let Ok(shape) = Shape::new(width, height, channels) else { return img.clone() };
+    if width == 0 || height == 0 || img.data.len() != shape.samples() {
+        return img.clone();
     }
-    // Box widths for three passes (Kovesi, "Fast almost-Gaussian filtering").
-    let n = 3.0f32;
-    let wl = ((12.0 * sigma * sigma / n + 1.0).sqrt()).floor() as i64;
-    let wl = if wl % 2 == 0 { wl - 1 } else { wl };
-    let wu = wl + 2;
-    let m = ((12.0 * sigma * sigma - n * (wl * wl) as f32 - 4.0 * n * wl as f32 - 3.0 * n) / (-4.0 * wl as f32 - 4.0)).round() as i64;
-    let mut out = img.clone();
-    for i in 0..3 {
-        let r = (if i < m { wl } else { wu } - 1) / 2;
-        out = box_1d(&box_1d(&out, r.max(0), true, tile), r.max(0), false, tile);
+    let mut data = img.data.as_ref().clone();
+    if gaussian_rows(&mut data, width, channels, sigma_x, tile).is_err() {
+        return img.clone();
     }
-    out
-}
-
-fn convolve_1d(src: &Image, k: &[f32], r: i64, horizontal: bool, tile: bool) -> Image {
-    let c = src.channels();
-    Image::generate(src.w, src.h, src.kind, |x, y| {
-        let mut acc = [0.0f32; 4];
-        for (i, kv) in k.iter().enumerate() {
-            let o = i as i64 - r;
-            let p = if horizontal { src.get(x as i64 + o, y as i64, tile) } else { src.get(x as i64, y as i64 + o, tile) };
-            for ch in 0..c.clamp(1, 4) {
-                acc[ch] += p[ch] * kv;
-            }
+    if sigma_y != 0.0 && height > 1 {
+        let mut columns = transpose(&data, width, height, channels);
+        if gaussian_rows(&mut columns, height, channels, sigma_y, tile).is_err() {
+            return img.clone();
         }
-        if c == 1 { [acc[0], 0.0, 0.0, 0.0] } else { acc }
-    })
+        data = transpose(&columns, height, width, channels);
+    }
+    Image { w: img.w, h: img.h, kind: img.kind, data: Arc::new(data) }
 }
 
-/// One running-sum box pass of radius `r`.
-fn box_1d(src: &Image, r: i64, horizontal: bool, tile: bool) -> Image {
-    if r <= 0 {
-        return src.clone();
+fn gaussian_rows(pixels: &mut [f32], width: usize, channels: usize, sigma: f32, tile: bool) -> Result<(), craft_blur::Error> {
+    if sigma == 0.0 || width == 1 {
+        return Ok(());
     }
-    let (w, h) = (src.w as usize, src.h as usize);
-    let c = src.channels();
-    let inv = 1.0 / (2 * r + 1) as f32;
-    let mut data = vec![0.0f32; w * h * c];
-    let line_len = if horizontal { w } else { h };
-    let lines = if horizontal { h } else { w };
-    let get = |line: usize, i: i64, ch: usize| -> f32 {
-        let n = line_len as i64;
-        let i = if tile { i.rem_euclid(n) } else { i.clamp(0, n - 1) } as usize;
-        let (x, y) = if horizontal { (i, line) } else { (line, i) };
-        src.data.get((y * w + x) * c + ch).copied().unwrap_or(0.0)
+    let gaussian = Gaussian::new(sigma, Quality::Recursive)?;
+    let padding = if tile {
+        match gaussian.separable() {
+            Separable::Kernel(kernel) => kernel.len() / 2,
+            _ => (24.0 * sigma).ceil() as usize,
+        }
+    } else {
+        0
     };
-    let results: Vec<Vec<f32>> = (0..lines)
-        .into_par_iter()
-        .map(|line| {
-            let mut out = vec![0.0f32; line_len * c];
-            for ch in 0..c {
-                let mut sum: f32 = (-r..=r).map(|i| get(line, i, ch)).sum();
-                for i in 0..line_len {
-                    out[i * c + ch] = sum * inv;
-                    sum += get(line, i as i64 + r + 1, ch) - get(line, i as i64 - r, ch);
+    let padded_width = width + padding * 2;
+    let row_samples = width * channels;
+    pixels.par_chunks_mut(row_samples * craft_blur::LINE_BATCH).try_for_each_init(
+        || (Scratch::default(), Vec::<f32>::new()),
+        |(scratch, padded), rows| {
+            let height = rows.len() / row_samples;
+            if padding == 0 {
+                return gaussian.filter_rows(rows, Shape::new(width, height, channels)?, Edge::Clamp, scratch, Cancel::Never);
+            }
+            let shape = Shape::new(padded_width, height, channels)?;
+            padded.clear();
+            padded.try_reserve(shape.samples()).map_err(|_| craft_blur::Error::Allocation)?;
+            for row in rows.chunks_exact(row_samples) {
+                let mut remaining = padded_width * channels;
+                let mut source = (width - padding % width) % width * channels;
+                while remaining != 0 {
+                    let count = remaining.min(row_samples - source);
+                    padded.extend_from_slice(&row[source..source + count]);
+                    remaining -= count;
+                    source = 0;
                 }
             }
-            out
-        })
-        .collect();
-    for (line, vals) in results.iter().enumerate() {
-        for i in 0..line_len {
-            let (x, y) = if horizontal { (i, line) } else { (line, i) };
-            let dst = (y * w + x) * c;
-            data[dst..dst + c].copy_from_slice(&vals[i * c..i * c + c]);
+            gaussian.filter_rows(padded, shape, Edge::Clamp, scratch, Cancel::Never)?;
+            for (output, input) in rows.chunks_exact_mut(row_samples).zip(padded.chunks_exact(padded_width * channels)) {
+                output.copy_from_slice(&input[padding * channels..padding * channels + row_samples]);
+            }
+            Ok(())
+        },
+    )
+}
+
+fn transpose(pixels: &[f32], width: usize, height: usize, channels: usize) -> Vec<f32> {
+    let mut output = vec![0.0; pixels.len()];
+    output.par_chunks_mut(32 * height * channels).enumerate().for_each(|(block, columns)| {
+        let column_count = columns.len() / (height * channels);
+        for row in 0..height {
+            for column in 0..column_count {
+                let source = (row * width + block * 32 + column) * channels;
+                let target = (column * height + row) * channels;
+                columns[target..target + channels].copy_from_slice(&pixels[source..source + channels]);
+            }
         }
-    }
-    Image { w: src.w, h: src.h, kind: src.kind, data: Arc::new(data) }
+    });
+    output
 }
 
 /// Squared Euclidean distance (pixels) from every pixel to the nearest pixel where `inside` is

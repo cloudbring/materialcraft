@@ -496,42 +496,12 @@ fn anisotropic_blur(ctx: &Ctx) -> CookResult {
     // Blur in a rotated frame: rotate, blur x/y separately, rotate back.
     let (sx, sy) = (s, s * (1.0 - an));
     if a.abs() < 1e-4 {
-        return Ok(vec![blur_xy(&img, sx, sy, ctx.tile)]);
+        return Ok(vec![ops::gaussian_xy(&img, sx, sy, ctx.tile)]);
     }
     let rotated =
         Image::generate_uv(ctx.w, ctx.h, img.kind, |u, v| transform_sample(&img, u, v, [0.0, 0.0], [1.0, 1.0], a / TAU, false, true).unwrap_or([0.0; 4]));
-    let b = blur_xy(&rotated, sx, sy, true);
+    let b = ops::gaussian_xy(&rotated, sx, sy, true);
     Ok(vec![Image::generate_uv(ctx.w, ctx.h, img.kind, |u, v| transform_sample(&b, u, v, [0.0, 0.0], [1.0, 1.0], -a / TAU, false, true).unwrap_or([0.0; 4]))])
-}
-
-fn blur_xy(img: &Image, sx: f32, sy: f32, tile: bool) -> Image {
-    // Separable: a horizontal-only Gaussian is a 2D one on an image stretched vertically, so
-    // blur fully with the smaller sigma and add the extra along x by repeated small passes.
-    let base = ops::gaussian(img, sy, tile);
-    let extra = (sx * sx - sy * sy).max(0.0).sqrt();
-    if extra < 0.1 {
-        return base;
-    }
-    let n = (extra / 2.0).ceil().max(1.0) as i64;
-    let step = extra / (n as f32).sqrt();
-    let mut out = base;
-    for _ in 0..n {
-        let src = out.clone();
-        let r = (step * 2.0).ceil() as i64;
-        let k: Vec<f32> = (-r..=r).map(|i| (-(i * i) as f32 / (2.0 * step * step)).exp()).collect();
-        let sum: f32 = k.iter().sum();
-        out = Image::generate(src.w, src.h, src.kind, |x, y| {
-            let mut acc = [0.0; 4];
-            for (j, kv) in k.iter().enumerate() {
-                let p = src.get(x as i64 + j as i64 - r, y as i64, tile);
-                for c in 0..4 {
-                    acc[c] += p[c] * kv / sum;
-                }
-            }
-            acc
-        });
-    }
-    out
 }
 
 fn non_uniform_blur(ctx: &Ctx) -> CookResult {
