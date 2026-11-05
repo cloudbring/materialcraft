@@ -747,6 +747,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-compare"
+version = "0.1.0"
+source = "git+https://github.com/cloudbring/craft-libs?rev=8fa1b4c45b613c92a4a02cd0255cca3c0329b024#8fa1b4c45b613c92a4a02cd0255cca3c0329b024"
+dependencies = [
+ "png",
+]
+
+[[package]]
 name = "craft-fonts-build"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=f8f8829cc7be65d466d687dae381d1ca60e31242#f8f8829cc7be65d466d687dae381d1ca60e31242"
@@ -2446,6 +2454,7 @@ name = "materialcraft-ui-egui"
 version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
+ "craft-compare",
  "craft-ui",
  "eframe",
  "egui",
@@ -2456,12 +2465,14 @@ dependencies = [
  "log",
  "materialcraft-engine",
  "materialcraft-render",
+ "pollster 0.4.0",
  "rfd",
  "serde",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "wgpu",
  "zip",
 ]
 

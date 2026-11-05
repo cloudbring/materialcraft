@@ -148,7 +148,9 @@ never a panic. The shared standard is `../craftrules/standards/never-crash.md`.
    ids and the mesh-map input identifiers in step with TextureCraft, bump the manifest `version`
    for incompatible changes, and never make one app depend on the other's crates.
 10. **Verify UI changes visually.** `MC_SNAPSHOT_DIR=<dir> cargo test -p materialcraft-ui-egui
-   --release --test snapshot -- --ignored` renders the real UI offscreen; look at the PNGs.
+   --release --test snapshot` renders the real UI offscreen; look at the PNGs. The same test
+   compares each scene with `crates/ui-egui/tests/goldens/` and fails on a difference: after an
+   intended UI change re-bless with `MC_BLESS=1` and review the PNG diff (see the README there).
 
 ## 4. Picking work
 

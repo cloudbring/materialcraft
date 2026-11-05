@@ -30,6 +30,7 @@ images, materials, sample graphs, presets, environments) may ever be added.
 | `docs/images/materialcraft-alpha-channel.png` | Docs screenshot: the 3D view's alpha channel view | MaterialCraft contributors | Offscreen render of MaterialCraft's UI (`crates/ui-egui/tests/snapshot.rs`) | MIT OR Apache-2.0 |
 | `docs/images/materialcraft-materials.png` | README render: eight sample materials on spheres | MaterialCraft contributors | `materialcraft-cli render --scene sphere --full --hq` of the templates, eight renders in a grid | MIT OR Apache-2.0 |
 | `docs/images/materialcraft-levels-editor.png` | Docs screenshot: the Levels editor with the input histogram | MaterialCraft contributors | Offscreen render of MaterialCraft's UI (`crates/ui-egui/tests/snapshot.rs`) | MIT OR Apache-2.0 |
+| `crates/ui-egui/tests/goldens/*.png` (each with a `.png.attribution` sidecar) | Golden reference images for the window snapshot tests | MaterialCraft contributors | original: rendered by MaterialCraft from its own sample graphs and templates (`MC_BLESS=1`) | MIT OR Apache-2.0 |
 | `docs/brand/artcraft-*.svg`, `docs/brand/artcraft-*.png` | ArtCraft logo and mark | ArtCraft Team | storytold/craftrules `assets/brand/` | ArtCraft brand terms, not open source ([`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt)) |
 | `crates/nodes/src/text.rs` (`GLYPHS`) | Single-stroke vector font of the Text node (A–Z, a–z, 0–9, punctuation) | MaterialCraft contributors | Original, designed as stroke data in code | MIT OR Apache-2.0 |
 

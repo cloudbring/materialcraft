@@ -1,0 +1,6 @@
+asset:        levels-editor.png
+title:        MaterialCraft snapshot: levels-editor
+author:       MaterialCraft contributors
+source:       original work (rendered by MaterialCraft's own renderer from procedural content; no external media)
+license:      MIT OR Apache-2.0
+notes:        Golden reference image (1/5 scale, 320x192). Regenerate with MC_BLESS=1.

@@ -40,3 +40,7 @@ web-sys = { version = "0.3", features = ["Window", "Document", "HtmlElement", "H
 eframe = { workspace = true, features = ["x11"] }
 # Offscreen renders of the real UI (tests/snapshot.rs).
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
+# Golden comparison (tests/common/golden.rs) and the GPU-adapter probe the snapshot tests skip on.
+craft-compare = { workspace = true }
+wgpu = { workspace = true }
+pollster = "0.4"
